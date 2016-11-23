@@ -3,63 +3,197 @@ package com.voler.manliao;
 import android.app.ActivityManager;
 import android.app.Application;
 import android.content.Context;
-import android.content.pm.PackageManager;
-import android.util.Log;
+import android.text.TextUtils;
 
+import com.hyphenate.EMCallBack;
 import com.hyphenate.chat.EMClient;
 import com.hyphenate.chat.EMOptions;
+import com.voler.manliao.db.EaseUser;
+import com.voler.manliao.db.Myinfo;
+import com.voler.manliao.db.UserDao;
 
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
-/**
- * 三尺春光驱我寒，一生戎马为长安 -- 韩经录
- * Created by voler on 2016/11/22.
- */
+public class MApplication extends Application {
 
-public class MApplication extends Application{
-    private Context appContext;
+    public static Context applicationContext;
+    private static MApplication instance;
+    private String username = "";
+    private Map<String, EaseUser> contactList;
+
     @Override
     public void onCreate() {
         super.onCreate();
+        applicationContext = this;
+        instance = this;
+        // 初始化环信sdk
+        init(applicationContext);
+    }
+
+    public static MApplication getInstance() {
+        return instance;
+    }
+
+	/*
+     * 第一步：sdk的一些参数配置 EMOptions 第二步：将配置参数封装类 传入SDK初始化
+	 */
+
+    public void init(Context context) {
+        // 第一步
+        EMOptions options = initChatOptions();
+        // 第二步
+        boolean success = initSDK(context, options);
+        if (success) {
+            // 设为调试模式，打成正式包时，最好设为false，以免消耗额外的资源
+            EMClient.getInstance().setDebugMode(true);
+            // 初始化数据库
+            initDbDao(context);
+        }
+    }
+
+    private void initDbDao(Context context) {
+        userDao = new UserDao(context);
+    }
+
+    public void setCurrentUserName(String username) {
+        this.username = username;
+        Myinfo.getInstance(instance).setUserInfo(Constant.KEY_USERNAME, username);
+    }
+
+    public String getCurrentUserName() {
+        if (TextUtils.isEmpty(username)) {
+            username = Myinfo.getInstance(instance).getUserInfo(Constant.KEY_USERNAME);
+
+        }
+        return username;
+
+    }
+
+    private UserDao userDao;
+
+    private EMOptions initChatOptions() {
+
+        // 获取到EMChatOptions对象
         EMOptions options = new EMOptions();
-// 默认添加好友时，是不需要验证的，改成需要验证
+        // 默认添加好友时，是不需要验证的，改成需要验证
         options.setAcceptInvitationAlways(false);
-        appContext = this;
+        // 设置是否需要已读回执
+        options.setRequireAck(true);
+        // 设置是否需要已送达回执
+        options.setRequireDeliveryAck(false);
+        return options;
+    }
+
+    private boolean sdkInited = false;
+
+    public synchronized boolean initSDK(Context context, EMOptions options) {
+        if (sdkInited) {
+            return true;
+        }
+
         int pid = android.os.Process.myPid();
         String processAppName = getAppName(pid);
-// 如果APP启用了远程的service，此application:onCreate会被调用2次
-// 为了防止环信SDK被初始化2次，加此判断会保证SDK被初始化1次
-// 默认的APP会在以包名为默认的process name下运行，如果查到的process name不是APP的process name就立即返回
 
-        if (processAppName == null ||!processAppName.equalsIgnoreCase(appContext.getPackageName())) {
-            Log.e("app", "enter the service process!");
+        // 如果app启用了远程的service，此application:onCreate会被调用2次
+        // 为了防止环信SDK被初始化2次，加此判断会保证SDK被初始化1次
+        // 默认的app会在以包名为默认的process name下运行，如果查到的process name不是app的process
+        // name就立即返回
+        if (processAppName == null || !processAppName.equalsIgnoreCase(applicationContext.getPackageName())) {
 
             // 则此application::onCreate 是被service 调用的，直接返回
-            return;
+            return false;
         }
-//初始化
-        EMClient.getInstance().init(this, options);
-//在做打包混淆时，关闭debug模式，避免消耗不必要的资源
-        EMClient.getInstance().setDebugMode(true);
+        if (options == null) {
+            EMClient.getInstance().init(context, initChatOptions());
+        } else {
+            EMClient.getInstance().init(context, options);
+        }
+        sdkInited = true;
+        return true;
     }
+
+    /**
+     * check the application process name if process name is not qualified, then
+     * we think it is a service process and we will not init SDK
+     *
+     * @param pID
+     * @return
+     */
+    @SuppressWarnings("rawtypes")
     private String getAppName(int pID) {
         String processName = null;
-        ActivityManager am = (ActivityManager) this.getSystemService(ACTIVITY_SERVICE);
+        ActivityManager am = (ActivityManager) applicationContext.getSystemService(Context.ACTIVITY_SERVICE);
         List l = am.getRunningAppProcesses();
         Iterator i = l.iterator();
-        PackageManager pm = this.getPackageManager();
         while (i.hasNext()) {
             ActivityManager.RunningAppProcessInfo info = (ActivityManager.RunningAppProcessInfo) (i.next());
             try {
                 if (info.pid == pID) {
+
                     processName = info.processName;
                     return processName;
                 }
             } catch (Exception e) {
-                // Log.d("Process", "Error>> :"+ e.toString());
             }
         }
         return processName;
+    }
+
+    public void setContactList(Map<String, EaseUser> contactList) {
+
+        this.contactList = contactList;
+
+        userDao.saveContactList(new ArrayList<EaseUser>(contactList.values()));
+
+    }
+
+    public Map<String, EaseUser> getContactList() {
+
+        if (contactList == null) {
+
+            contactList = userDao.getContactList();
+
+        }
+        return contactList;
+
+    }
+
+    /**
+     * 退出登录
+     *
+     * @param unbindDeviceToken 是否解绑设备token(使用GCM才有)
+     * @param callback          callback
+     */
+    public void logout(boolean unbindDeviceToken, final EMCallBack callback) {
+
+        EMClient.getInstance().logout(unbindDeviceToken, new EMCallBack() {
+
+            @Override
+            public void onSuccess() {
+
+                if (callback != null) {
+                    callback.onSuccess();
+                }
+
+            }
+
+            @Override
+            public void onProgress(int progress, String status) {
+                if (callback != null) {
+                    callback.onProgress(progress, status);
+                }
+            }
+
+            @Override
+            public void onError(int code, String error) {
+
+                if (callback != null) {
+                    callback.onError(code, error);
+                }
+            }
+        });
     }
 }
